@@ -1,38 +1,57 @@
 package awesomeapps.lifearchive;
 
+import android.app.AlarmManager;
+import android.app.PendingIntent;
+import android.content.Intent;
 import android.os.Bundle;
 import android.support.v7.app.AppCompatActivity;
+import android.support.v7.widget.DefaultItemAnimator;
 import android.support.v7.widget.LinearLayoutManager;
-import android.support.v7.widget.RecyclerView;
 import android.support.v7.widget.Toolbar;
-import android.util.Log;
+import android.support.v7.widget.helper.ItemTouchHelper;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
 
 import com.bumptech.glide.Glide;
 
-import awesomeapps.lifearchive.adapters.AdapterDrops;
-import awesomeapps.lifearchive.beans.Drop;
 import io.realm.Realm;
 import io.realm.RealmChangeListener;
 import io.realm.RealmResults;
+import io.realm.Sort;
+import awesomeapps.lifearchive.adapters.AdapterDrops;
+import awesomeapps.lifearchive.adapters.AddListener;
+import awesomeapps.lifearchive.adapters.CompleteListener;
+import awesomeapps.lifearchive.adapters.Divider;
+import awesomeapps.lifearchive.adapters.Filter;
+import awesomeapps.lifearchive.adapters.MarkListener;
+import awesomeapps.lifearchive.adapters.ResetListener;
+import awesomeapps.lifearchive.adapters.SimpleTouchCallback;
+import awesomeapps.lifearchive.beans.Drop;
+import awesomeapps.lifearchive.services.NotificationService;
+import awesomeapps.lifearchive.widgets.BucketRecyclerView;
 
-//TODO add a layout manager for the RecyclerView
 public class ActivityMain extends AppCompatActivity {
 
-    private static final String TAG = "MainActivity" ;
+    private static final String TAG = "VIVZ";
     Toolbar mToolbar;
     Button mBtnAdd;
-    RecyclerView mRecycler;
+    BucketRecyclerView mRecycler;
     Realm mRealm;
     RealmResults<Drop> mResults;
+    View mEmptyView;
     AdapterDrops mAdapter;
-
     private View.OnClickListener mBtnAddListener = new View.OnClickListener() {
-
         @Override
         public void onClick(View v) {
+            showDialogAdd();
+        }
+    };
+    private AddListener mAddListener = new AddListener() {
+        @Override
+        public void add() {
             showDialogAdd();
         }
     };
@@ -40,8 +59,28 @@ public class ActivityMain extends AppCompatActivity {
     private RealmChangeListener mChangeListener = new RealmChangeListener() {
         @Override
         public void onChange(Object o) {
-            Log.d(TAG, "onChange: was called");
             mAdapter.update(mResults);
+        }
+    };
+
+    private MarkListener mMarkListener = new MarkListener() {
+        @Override
+        public void onMark(int position) {
+            showDialogMark(position);
+        }
+    };
+
+    private CompleteListener mCompleteListener = new CompleteListener() {
+        @Override
+        public void onComplete(int position) {
+            mAdapter.markComplete(position);
+        }
+    };
+    private ResetListener mResetListener = new ResetListener() {
+        @Override
+        public void onReset() {
+            AppBucketDrops.save(ActivityMain.this, Filter.NONE);
+            loadResults(Filter.NONE);
         }
     };
 
@@ -50,36 +89,106 @@ public class ActivityMain extends AppCompatActivity {
         dialog.show(getSupportFragmentManager(), "Add");
     }
 
+    private void showDialogMark(int position) {
+        DialogMark dialog = new DialogMark();
+        Bundle bundle = new Bundle();
+        bundle.putInt("POSITION", position);
+        dialog.setArguments(bundle);
+        dialog.setCompleteListener(mCompleteListener);
+        dialog.show(getSupportFragmentManager(), "Mark");
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-
         mRealm = Realm.getDefaultInstance();
-        mResults = mRealm.where(Drop.class).findAllAsync();
-
-        mToolbar = findViewById(R.id.toolbar);
-        mBtnAdd = findViewById(R.id.btn_add);
-        mRecycler = findViewById(R.id.rv_drops);
-
-        mAdapter = new AdapterDrops(this, mResults);
-
-        LinearLayoutManager manager = new LinearLayoutManager(this);
-        mRecycler.setLayoutManager(manager);
-
-        mRecycler.setAdapter(mAdapter);
-
-        mBtnAdd.setOnClickListener(mBtnAddListener);
+        mToolbar = (Toolbar) findViewById(R.id.toolbar);
         setSupportActionBar(mToolbar);
+        mBtnAdd = (Button) findViewById(R.id.btn_add);
+        mBtnAdd.setOnClickListener(mBtnAddListener);
+
+        int filterOption = AppBucketDrops.load(this);
+        loadResults(filterOption);
+        mEmptyView = findViewById(R.id.empty_drops);
+        mRecycler = (BucketRecyclerView) findViewById(R.id.rv_drops);
+        mRecycler.addItemDecoration(new Divider(this, LinearLayoutManager.VERTICAL));
+        mRecycler.setItemAnimator(new DefaultItemAnimator());
+        mRecycler.hideIfEmpty(mToolbar);
+        mRecycler.showIfEmpty(mEmptyView);
+        mAdapter = new AdapterDrops(this, mRealm, mResults, mAddListener, mMarkListener, mResetListener);
+        mAdapter.setHasStableIds(true);
+        mRecycler.setAdapter(mAdapter);
+        SimpleTouchCallback callback = new SimpleTouchCallback(mAdapter);
+        ItemTouchHelper helper = new ItemTouchHelper(callback);
+        helper.attachToRecyclerView(mRecycler);
         initBackgroundImage();
+        AlarmManager manager = (AlarmManager) getSystemService(ALARM_SERVICE);
+        Intent intent = new Intent(this, NotificationService.class);
+        PendingIntent pendingIntent = PendingIntent.getService(this, 100, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+        manager.setInexactRepeating(AlarmManager.ELAPSED_REALTIME_WAKEUP, 1000, 120000, pendingIntent);
     }
 
-    private void initBackgroundImage() {
-        ImageView background = findViewById(R.id.iv_background);
-        Glide.with(this)
-                .load(R.drawable.background)
-                .into(background);
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.menu_main, menu);
+        return true;
     }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        int id = item.getItemId();
+        boolean handled = true;
+        int filterOption = Filter.NONE;
+        switch (id) {
+            case R.id.action_add:
+                showDialogAdd();
+                break;
+            case R.id.action_sort_none:
+                filterOption = Filter.NONE;
+                break;
+            case R.id.action_sort_ascending_date:
+                filterOption = Filter.LEAST_TIME_LEFT;
+                break;
+            case R.id.action_sort_descending_date:
+                filterOption = Filter.MOST_TIME_LEFT;
+                break;
+            case R.id.action_show_complete:
+                filterOption = Filter.COMPLETE;
+                break;
+            case R.id.action_show_incomplete:
+                filterOption = Filter.INCOMPLETE;
+                break;
+            default:
+                handled = false;
+                break;
+        }
+        loadResults(filterOption);
+        AppBucketDrops.save(this, filterOption);
+        return handled;
+    }
+
+    private void loadResults(int filterOption) {
+        switch (filterOption) {
+            case Filter.NONE:
+                mResults = mRealm.where(Drop.class).findAllAsync();
+                break;
+            case Filter.LEAST_TIME_LEFT:
+                mResults = mRealm.where(Drop.class).findAllSortedAsync("when");
+                break;
+            case Filter.MOST_TIME_LEFT:
+                mResults = mRealm.where(Drop.class).findAllSortedAsync("when", Sort.DESCENDING);
+                break;
+            case Filter.COMPLETE:
+                mResults = mRealm.where(Drop.class).equalTo("completed", true).findAllAsync();
+                break;
+            case Filter.INCOMPLETE:
+                mResults = mRealm.where(Drop.class).equalTo("completed", false).findAllAsync();
+                break;
+        }
+        mResults.addChangeListener(mChangeListener);
+    }
+
 
     @Override
     protected void onStart() {
@@ -92,4 +201,12 @@ public class ActivityMain extends AppCompatActivity {
         super.onStop();
         mResults.removeChangeListener(mChangeListener);
     }
+
+    private void initBackgroundImage() {
+        ImageView background = (ImageView) findViewById(R.id.iv_background);
+        Glide.with(this)
+                .load(R.drawable.background)
+                .into(background);
+    }
+
 }
